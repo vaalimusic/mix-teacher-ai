@@ -1,0 +1,10 @@
+build*/
+out/
+*.jucer
+*.vst3/
+*.vst3
+*.component
+*.aaxplugin
+.vs/
+.cache/
+CMakeUserPresets.json
