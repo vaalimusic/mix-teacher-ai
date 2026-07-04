@@ -26,7 +26,14 @@ juce::String formatDb(float value)
     if (value <= -119.0f)
         return "-inf";
 
-    return juce::String(value, 1) + " dB";
+    const auto rounded = static_cast<int>(std::round(value));
+    const auto absValue = std::abs(rounded);
+    auto digits = juce::String(absValue);
+
+    while (digits.length() < 2)
+        digits = "0" + digits;
+
+    return juce::String(rounded < 0 ? "-" : "+") + digits + " dB";
 }
 
 float dbToNorm(float db, float floorDb = -60.0f, float ceilingDb = 0.0f)
@@ -69,17 +76,18 @@ MixTeacherAudioProcessorEditor::MixTeacherAudioProcessorEditor(MixTeacherAudioPr
     setupCombo(trackTypeBox);
     setupCombo(explanationModeBox);
     setupCombo(languageBox);
-    setupKnob(sensitivitySlider);
+    setupCombo(spectrumFftBox);
     setupKnob(goodizerSlider);
 
     trackTypeBox.addItemList({ "Auto", "Vocal", "Drums", "Drums Bus", "Kick", "Snare", "Bass", "Guitar", "Piano", "Synth", "FX", "Master" }, 1);
     explanationModeBox.addItemList({ "Beginner", "Intermediate", "Advanced" }, 1);
     languageBox.addItemList({ juce::String::fromUTF8("Русский"), "English" }, 1);
+    spectrumFftBox.addItemList({ "1024", "2048", "4096", "8192" }, 1);
 
     addAndMakeVisible(trackTypeBox);
     addAndMakeVisible(explanationModeBox);
     addAndMakeVisible(languageBox);
-    addAndMakeVisible(sensitivitySlider);
+    addAndMakeVisible(spectrumFftBox);
     addAndMakeVisible(goodizerSlider);
 
     setupButton(freezeButton);
@@ -100,11 +108,13 @@ MixTeacherAudioProcessorEditor::MixTeacherAudioProcessorEditor(MixTeacherAudioPr
     trackTypeAttachment = std::make_unique<ComboAttachment>(audioProcessor.getParameters(), "trackType", trackTypeBox);
     explanationModeAttachment = std::make_unique<ComboAttachment>(audioProcessor.getParameters(), "explanationMode", explanationModeBox);
     languageAttachment = std::make_unique<ComboAttachment>(audioProcessor.getParameters(), "language", languageBox);
-    sensitivityAttachment = std::make_unique<SliderAttachment>(audioProcessor.getParameters(), "sensitivity", sensitivitySlider);
+    spectrumFftAttachment = std::make_unique<ComboAttachment>(audioProcessor.getParameters(), "spectrumFftSize", spectrumFftBox);
     goodizerAttachment = std::make_unique<SliderAttachment>(audioProcessor.getParameters(), "goodizer", goodizerSlider);
     freezeAttachment = std::make_unique<ButtonAttachment>(audioProcessor.getParameters(), "freeze", freezeButton);
 
     snapshot = audioProcessor.getLatestAnalysisSnapshot();
+    displayedSnapshot = snapshot;
+    smoothedSpectrum = snapshot.spectrum;
     updateProblemSnapshot();
     startTimerHz(24);
 }
@@ -151,13 +161,13 @@ void MixTeacherAudioProcessorEditor::paint(juce::Graphics& g)
     g.setColour(mixteacher::severityColour(snapshot.validity.isValidForAnalysis ? mixteacher::Severity::ok : mixteacher::Severity::warning));
     g.setFont(juce::FontOptions(13.0f, juce::Font::bold));
     g.drawFittedText(tr("Доверие: ", "Trust: ") + mixteacher::confidenceLabel(snapshot.validity.confidence, snapshot.language)
-                         + "   " + snapshot.firstStep.title,
+                         + "   " + displayedSnapshot.firstStep.title,
                      footerText.removeFromTop(18),
                      juce::Justification::centredLeft,
                      1);
     g.setColour(textMuted());
     g.setFont(12.0f);
-    g.drawFittedText(snapshot.firstStep.action, footerText, juce::Justification::centredLeft, 1);
+    g.drawFittedText(displayedSnapshot.firstStep.action, footerText, juce::Justification::centredLeft, 1);
 }
 
 void MixTeacherAudioProcessorEditor::resized()
@@ -175,8 +185,8 @@ void MixTeacherAudioProcessorEditor::resized()
     x += 140;
     languageBox.setBounds(x, controlY, 122, controlH);
     x += 132;
-    sensitivitySlider.setBounds(x, controls.getY() + 24, 42, 42);
-    x += 52;
+    spectrumFftBox.setBounds(x, controlY, 76, controlH);
+    x += 86;
     freezeButton.setBounds(x, controlY, 68, controlH);
 
     const auto topY = header.getBottom() + 20;
@@ -196,6 +206,8 @@ void MixTeacherAudioProcessorEditor::timerCallback()
     if (!isFrozen())
     {
         snapshot = audioProcessor.getLatestAnalysisSnapshot();
+        updateDisplayedSnapshot();
+        updateSmoothedSpectrum();
         updateProblemSnapshot();
     }
 
@@ -218,6 +230,8 @@ void MixTeacherAudioProcessorEditor::buttonClicked(juce::Button* button)
         hasProblemSnapshot = false;
         problemSnapshotKind = mixteacher::IssueKind::none;
         snapshot = audioProcessor.getLatestAnalysisSnapshot();
+        displayedSnapshot = snapshot;
+        smoothedSpectrum = snapshot.spectrum;
         repaint();
         return;
     }
@@ -250,6 +264,14 @@ float MixTeacherAudioProcessorEditor::getGoodizerAmount() const
     return 0.0f;
 }
 
+juce::String MixTeacherAudioProcessorEditor::getSpectrumFftLabel() const
+{
+    if (const auto* value = audioProcessor.getParameters().getRawParameterValue("spectrumFftSize"))
+        return juce::String(1024 << juce::jlimit(0, 3, static_cast<int>(std::round(value->load()))));
+
+    return "4096";
+}
+
 juce::String MixTeacherAudioProcessorEditor::tr(const char* ruUtf8, const char* en) const
 {
     return isRussian() ? juce::String::fromUTF8(ruUtf8) : juce::String(en);
@@ -271,6 +293,47 @@ void MixTeacherAudioProcessorEditor::updateProblemSnapshot()
         problemSnapshot = snapshot;
         problemSnapshotKind = issue.kind;
         hasProblemSnapshot = true;
+    }
+}
+
+void MixTeacherAudioProcessorEditor::updateDisplayedSnapshot()
+{
+    const auto currentKind = snapshot.issues.empty() ? mixteacher::IssueKind::none : snapshot.issues.front().kind;
+    const auto displayedKind = displayedSnapshot.issues.empty() ? mixteacher::IssueKind::none : displayedSnapshot.issues.front().kind;
+    const auto nowMs = juce::Time::getMillisecondCounterHiRes();
+
+    if (currentKind == displayedKind)
+    {
+        displayedSnapshot = snapshot;
+        pendingDisplayKind = mixteacher::IssueKind::none;
+        pendingDisplayStartMs = 0.0;
+        return;
+    }
+
+    if (currentKind != pendingDisplayKind)
+    {
+        pendingDisplayKind = currentKind;
+        pendingDisplayStartMs = nowMs;
+        return;
+    }
+
+    if (nowMs - pendingDisplayStartMs >= 5000.0)
+    {
+        displayedSnapshot = snapshot;
+        pendingDisplayKind = mixteacher::IssueKind::none;
+        pendingDisplayStartMs = 0.0;
+    }
+}
+
+void MixTeacherAudioProcessorEditor::updateSmoothedSpectrum()
+{
+    const auto smoothing = snapshot.spectrumFftSize >= 4096 ? 0.88f : 0.82f;
+
+    for (int i = 0; i < mixteacher::spectrumBins; ++i)
+    {
+        const auto current = snapshot.spectrum[static_cast<size_t>(i)];
+        auto& smoothed = smoothedSpectrum[static_cast<size_t>(i)];
+        smoothed = smoothed * smoothing + current * (1.0f - smoothing);
     }
 }
 
@@ -300,9 +363,9 @@ void MixTeacherAudioProcessorEditor::drawHeader(juce::Graphics& g, juce::Rectang
     x += 140;
     g.drawFittedText(tr("ЯЗЫК", "LANG"), juce::Rectangle<int>(x, labels.getY(), 122, 14), juce::Justification::centredLeft, 1);
     x += 132;
-    g.drawFittedText(tr("ЧУТЬЁ", "SENS"), juce::Rectangle<int>(x - 4, labels.getY(), 52, 14), juce::Justification::centred, 1);
+    g.drawFittedText("FFT", juce::Rectangle<int>(x, labels.getY(), 76, 14), juce::Justification::centredLeft, 1);
 
-    const auto severity = snapshot.issues.empty() ? mixteacher::Severity::ok : snapshot.issues.front().severity;
+    const auto severity = displayedSnapshot.issues.empty() ? mixteacher::Severity::ok : displayedSnapshot.issues.front().severity;
     auto statusArea = area.reduced(16, 12).removeFromRight(34);
     g.setColour(mixteacher::severityColour(severity));
     g.fillEllipse(statusArea.removeFromTop(34).withSizeKeepingCentre(24, 24).toFloat());
@@ -391,10 +454,12 @@ void MixTeacherAudioProcessorEditor::drawSpectrum(juce::Graphics& g, juce::Recta
     drawSection(g, area, tr("СПЕКТР", "SPECTRUM"));
 
     auto graph = area.reduced(14, 36).withTrimmedTop(4);
-    drawSpectrumBars(g, graph, snapshot, false);
+    auto visual = snapshot;
+    visual.spectrum = smoothedSpectrum;
+    drawSpectrumBars(g, graph, visual, false);
     g.setColour(textMuted());
     g.setFont(11.0f);
-    g.drawText("80   250   800   2k   5k   10k", graph.removeFromBottom(16), juce::Justification::centred);
+    g.drawText("80   250   800   2k   5k   10k   FFT " + getSpectrumFftLabel(), graph.removeFromBottom(16), juce::Justification::centred);
 }
 
 void MixTeacherAudioProcessorEditor::drawSpectrumBars(juce::Graphics& g,
@@ -462,15 +527,15 @@ void MixTeacherAudioProcessorEditor::drawDynamicsGraph(juce::Graphics& g, juce::
             path.lineTo(x, y);
     }
 
-    const auto colour = snapshot.rmsRangeDb > 9.0f ? mixteacher::severityColour(mixteacher::Severity::problem)
-                                                   : snapshot.rmsRangeDb > 5.0f ? mixteacher::severityColour(mixteacher::Severity::warning)
+    const auto colour = snapshot.rmsRangeDb > 15.0f ? mixteacher::severityColour(mixteacher::Severity::problem)
+                                                    : snapshot.rmsRangeDb > 9.0f ? mixteacher::severityColour(mixteacher::Severity::warning)
                                                                                : green();
     g.setColour(colour);
     g.strokePath(path, juce::PathStrokeType(2.0f));
 
     g.setColour(textMuted());
     g.setFont(12.0f);
-    g.drawText(tr("P90-P10 ", "P90-P10 ") + juce::String(snapshot.rmsRangeDb, 1) + " dB   "
+    g.drawText(tr("P90-P10 ", "P90-P10 ") + juce::String(static_cast<int>(std::round(snapshot.rmsRangeDb))) + " dB   "
                    + tr("Транзиенты ", "Transients ") + juce::String(snapshot.transientScore * 100.0f, 0) + "%"
                    + "   Onsets " + juce::String(snapshot.onsetCount),
                graph.reduced(8, 4),
@@ -610,11 +675,11 @@ void MixTeacherAudioProcessorEditor::drawLevels(juce::Graphics& g, juce::Rectang
     content.removeFromTop(8);
     g.setColour(textMuted());
     g.setFont(12.0f);
-    auto statusText = "Crest " + juce::String(snapshot.crestFactorDb, 1) + " dB   "
-                      + tr("Запас ", "Headroom ") + juce::String(snapshot.headroomDb, 1) + " dB   "
+    auto statusText = "Crest " + juce::String(static_cast<int>(std::round(snapshot.crestFactorDb))) + " dB   "
+                      + tr("Запас ", "Headroom ") + juce::String(static_cast<int>(std::round(snapshot.headroomDb))) + " dB   "
                       + tr("Тип ", "Type ") + snapshot.track.effectiveType + " "
                       + juce::String(snapshot.track.confidence * 100.0f, 0) + "%"
-                      + "   " + tr("Чутьё ", "Sens ") + juce::String(snapshot.sensitivity * 100.0f, 0) + "%";
+                      + "   FFT " + juce::String(snapshot.spectrumFftSize);
 
     if (isDrumSource(snapshot.track.effectiveType))
     {
@@ -630,7 +695,7 @@ void MixTeacherAudioProcessorEditor::drawTeacher(juce::Graphics& g, juce::Rectan
 {
     drawSection(g, area, tr("УЧИТЕЛЬ ГОВОРИТ", "TEACHER SAYS"));
 
-    const auto issue = snapshot.issues.empty() ? mixteacher::TeacherIssue {} : snapshot.issues.front();
+    const auto issue = displayedSnapshot.issues.empty() ? mixteacher::TeacherIssue {} : displayedSnapshot.issues.front();
 
     auto content = area.reduced(16, 34);
     const auto colour = mixteacher::severityColour(issue.severity);
@@ -648,7 +713,7 @@ void MixTeacherAudioProcessorEditor::drawTeacher(juce::Graphics& g, juce::Rectan
 
     g.setColour(colour);
     g.setFont(12.0f);
-    g.drawFittedText(mixteacher::confidenceLabel(issue.confidence, snapshot.language)
+    g.drawFittedText(mixteacher::confidenceLabel(issue.confidence, displayedSnapshot.language)
                          + " " + juce::String(issue.confidence * 100.0f, 0) + "%",
                      content.removeFromTop(18),
                      juce::Justification::centredLeft,

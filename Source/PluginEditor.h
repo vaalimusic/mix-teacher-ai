@@ -37,20 +37,27 @@ private:
     bool isFrozen() const;
     bool isRussian() const;
     float getGoodizerAmount() const;
+    juce::String getSpectrumFftLabel() const;
     juce::String tr(const char* ruUtf8, const char* en) const;
     void updateProblemSnapshot();
+    void updateDisplayedSnapshot();
+    void updateSmoothedSpectrum();
     void drawSpectrumBars(juce::Graphics&, juce::Rectangle<int>, const mixteacher::AnalysisSnapshot&, bool compact);
 
     MixTeacherAudioProcessor& audioProcessor;
     mixteacher::AnalysisSnapshot snapshot;
+    mixteacher::AnalysisSnapshot displayedSnapshot;
     mixteacher::AnalysisSnapshot problemSnapshot;
     bool hasProblemSnapshot = false;
     mixteacher::IssueKind problemSnapshotKind = mixteacher::IssueKind::none;
+    mixteacher::IssueKind pendingDisplayKind = mixteacher::IssueKind::none;
+    double pendingDisplayStartMs = 0.0;
+    std::array<float, mixteacher::spectrumBins> smoothedSpectrum {};
 
     juce::ComboBox trackTypeBox;
     juce::ComboBox explanationModeBox;
     juce::ComboBox languageBox;
-    juce::Slider sensitivitySlider;
+    juce::ComboBox spectrumFftBox;
     juce::Slider goodizerSlider;
     juce::ToggleButton freezeButton { "Freeze" };
     juce::TextButton resetButton { "Reset" };
@@ -64,7 +71,7 @@ private:
     std::unique_ptr<ComboAttachment> trackTypeAttachment;
     std::unique_ptr<ComboAttachment> explanationModeAttachment;
     std::unique_ptr<ComboAttachment> languageAttachment;
-    std::unique_ptr<SliderAttachment> sensitivityAttachment;
+    std::unique_ptr<ComboAttachment> spectrumFftAttachment;
     std::unique_ptr<SliderAttachment> goodizerAttachment;
     std::unique_ptr<ButtonAttachment> freezeAttachment;
     float goodizerPhase = 0.0f;

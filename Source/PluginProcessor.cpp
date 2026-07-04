@@ -63,11 +63,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout MixTeacherAudioProcessor::cr
         juce::StringArray { juce::String::fromUTF8("Русский"), "English" },
         0));
 
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID { "sensitivity", 1 },
-        "Sensitivity",
-        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.01f },
-        0.65f));
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID { "spectrumFftSize", 1 },
+        "FFT Size",
+        juce::StringArray { "1024", "2048", "4096", "8192" },
+        2));
 
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID { "goodizer", 1 },
@@ -86,7 +86,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MixTeacherAudioProcessor::cr
 void MixTeacherAudioProcessor::prepareToPlay(double sampleRate, int)
 {
     currentSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
-    analysisHistory.assign(static_cast<size_t>(juce::jmax(fftSize, static_cast<int>(currentSampleRate * 3.0))), 0.0f);
+    analysisHistory.assign(static_cast<size_t>(juce::jmax(maxFftSize, static_cast<int>(currentSampleRate * 3.0))), 0.0f);
     historyWriteIndex = 0;
     goodizerLowState.fill(0.0f);
     resetAnalysis();
@@ -317,6 +317,26 @@ juce::String MixTeacherAudioProcessor::getChoiceText(const char* parameterID) co
     return {};
 }
 
+int MixTeacherAudioProcessor::getSpectrumFftSize() const
+{
+    if (const auto* parameter = dynamic_cast<juce::AudioParameterChoice*>(parameters.getParameter("spectrumFftSize")))
+        return 1024 << juce::jlimit(0, 3, parameter->getIndex());
+
+    return 4096;
+}
+
+int MixTeacherAudioProcessor::getSpectrumFftOrder() const
+{
+    switch (getSpectrumFftSize())
+    {
+        case 1024: return 10;
+        case 2048: return 11;
+        case 8192: return 13;
+        case 4096:
+        default: return 12;
+    }
+}
+
 mixteacher::AnalysisSnapshot MixTeacherAudioProcessor::getLatestAnalysisSnapshot()
 {
     drainFifo();
@@ -325,8 +345,8 @@ mixteacher::AnalysisSnapshot MixTeacherAudioProcessor::getLatestAnalysisSnapshot
     snapshot.track.manualType = normaliseTrackName(getChoiceText("trackType"));
     snapshot.explanationMode = getChoiceText("explanationMode").toLowerCase();
     snapshot.language = getChoiceText("language") == "English" ? "en" : "ru";
-    if (auto* value = parameters.getRawParameterValue("sensitivity"))
-        snapshot.sensitivity = value->load();
+    snapshot.sensitivity = 0.5f;
+    snapshot.spectrumFftSize = getSpectrumFftSize();
     if (auto* value = parameters.getRawParameterValue("goodizer"))
         snapshot.goodizerAmount = value->load();
     snapshot.analysisDurationSec = static_cast<double>(analysedSamples.load(std::memory_order_relaxed)) / juce::jmax(1.0, currentSampleRate);
@@ -359,7 +379,10 @@ mixteacher::AnalysisSnapshot MixTeacherAudioProcessor::getLatestAnalysisSnapshot
 
 void MixTeacherAudioProcessor::updateSpectrum(mixteacher::AnalysisSnapshot& snapshot)
 {
-    if (analysisHistory.size() < fftSize)
+    const auto fftOrder = getSpectrumFftOrder();
+    const auto fftSize = 1 << fftOrder;
+
+    if (analysisHistory.size() < static_cast<size_t>(fftSize))
         return;
 
     std::fill(fftBuffer.begin(), fftBuffer.end(), 0.0f);
@@ -373,8 +396,26 @@ void MixTeacherAudioProcessor::updateSpectrum(mixteacher::AnalysisSnapshot& snap
         fftBuffer[static_cast<size_t>(i)] = analysisHistory[sourceIndex];
     }
 
-    window.multiplyWithWindowingTable(fftBuffer.data(), fftSize);
-    fft.performFrequencyOnlyForwardTransform(fftBuffer.data());
+    switch (fftSize)
+    {
+        case 1024:
+            window1024.multiplyWithWindowingTable(fftBuffer.data(), fftSize);
+            fft1024.performFrequencyOnlyForwardTransform(fftBuffer.data());
+            break;
+        case 2048:
+            window2048.multiplyWithWindowingTable(fftBuffer.data(), fftSize);
+            fft2048.performFrequencyOnlyForwardTransform(fftBuffer.data());
+            break;
+        case 8192:
+            window8192.multiplyWithWindowingTable(fftBuffer.data(), fftSize);
+            fft8192.performFrequencyOnlyForwardTransform(fftBuffer.data());
+            break;
+        case 4096:
+        default:
+            window4096.multiplyWithWindowingTable(fftBuffer.data(), fftSize);
+            fft4096.performFrequencyOnlyForwardTransform(fftBuffer.data());
+            break;
+    }
 
     auto bandEnergyDb = [this](float lowHz, float highHz)
     {
@@ -503,12 +544,11 @@ void MixTeacherAudioProcessor::updateDynamics(mixteacher::AnalysisSnapshot& snap
 void MixTeacherAudioProcessor::updateValidity(mixteacher::AnalysisSnapshot& snapshot)
 {
     const auto russian = snapshot.language == "ru";
-    const auto thresholdShiftDb = (snapshot.sensitivity - 0.5f) * 18.0f;
     const auto usefulRmsDb = snapshot.activeRmsP50 > -119.0f ? snapshot.activeRmsP50 : snapshot.rmsDbfs;
-    const auto tooQuietPeak = -35.0f - thresholdShiftDb;
-    const auto tooQuietRms = -45.0f - thresholdShiftDb;
-    const auto quietPeak = -18.0f - thresholdShiftDb;
-    const auto quietRms = -30.0f - thresholdShiftDb;
+    const auto tooQuietPeak = -35.0f;
+    const auto tooQuietRms = -45.0f;
+    const auto quietPeak = -18.0f;
+    const auto quietRms = -30.0f;
 
     if (snapshot.peakDbfs < tooQuietPeak || usefulRmsDb < tooQuietRms)
     {

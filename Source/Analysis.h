@@ -129,6 +129,7 @@ struct AnalysisSnapshot
     juce::String explanationMode = "beginner";
     juce::String language = "ru";
     float sensitivity = 0.65f;
+    int spectrumFftSize = 4096;
     float goodizerAmount = 0.0f;
     double analysisDurationSec = 0.0;
 

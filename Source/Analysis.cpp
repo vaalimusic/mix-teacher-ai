@@ -1,6 +1,7 @@
 #include "Analysis.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace mixteacher
 {
@@ -65,7 +66,14 @@ TeacherIssue makeIssue(IssueKind kind,
 
 juce::String dbEvidence(const char* label, float value)
 {
-    return juce::String(label) + ": " + juce::String(value, 1) + " dB";
+    const auto rounded = static_cast<int>(std::round(value));
+    const auto absValue = std::abs(rounded);
+    auto digits = juce::String(absValue);
+
+    while (digits.length() < 2)
+        digits = "0" + digits;
+
+    return juce::String(label) + ": " + juce::String(rounded < 0 ? "-" : "+") + digits + " dB";
 }
 } // namespace
 
@@ -262,7 +270,12 @@ std::vector<TeacherIssue> buildTeacherIssues(const AnalysisSnapshot& snapshot)
                                              "If this warning disappears on a louder passage, the track is fine.")));
     }
 
-    if (snapshot.rmsRangeDb > 9.0f && snapshot.analysisDurationSec > 1.0)
+    const auto dynamicRangeThreshold = effectiveType == "vocal" || effectiveType == "guitar" || effectiveType == "piano"
+                                           || effectiveType == "drums" || effectiveType == "drums_bus"
+                                       ? 15.0f
+                                       : 12.0f;
+
+    if (snapshot.rmsRangeDb > dynamicRangeThreshold && snapshot.analysisDurationSec > 8.0)
     {
         issues.push_back(makeIssue(IssueKind::dynamics,
                                    Severity::problem,
@@ -562,6 +575,7 @@ juce::String AnalysisSnapshot::toJson() const
     root->setProperty("analysis_mode", analysisMode);
     root->setProperty("language", language);
     root->setProperty("sensitivity", sensitivity);
+    root->setProperty("spectrum_fft_size", spectrumFftSize);
     root->setProperty("goodizer_amount", goodizerAmount);
     root->setProperty("analysis_duration_sec", analysisDurationSec);
 

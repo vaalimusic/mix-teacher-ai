@@ -46,6 +46,8 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void applyGoodizer(juce::AudioBuffer<float>& buffer);
     juce::String getChoiceText(const char* parameterID) const;
+    int getSpectrumFftSize() const;
+    int getSpectrumFftOrder() const;
     void writeSampleToFifo(float sample) noexcept;
     void drainFifo();
     void appendToHistory(float sample);
@@ -61,16 +63,21 @@ private:
 
     static constexpr int fifoCapacity = 32768;
     static constexpr int maxBlockSamples = 8192;
-    static constexpr int fftOrder = 11;
-    static constexpr int fftSize = 1 << fftOrder;
+    static constexpr int maxFftSize = 1 << 13;
 
     juce::AbstractFifo sampleFifo { fifoCapacity };
     std::array<float, fifoCapacity> sampleFifoBuffer {};
     std::array<float, maxBlockSamples> monoScratch {};
 
-    juce::dsp::FFT fft { fftOrder };
-    juce::dsp::WindowingFunction<float> window { fftSize, juce::dsp::WindowingFunction<float>::hann };
-    std::array<float, fftSize * 2> fftBuffer {};
+    juce::dsp::FFT fft1024 { 10 };
+    juce::dsp::FFT fft2048 { 11 };
+    juce::dsp::FFT fft4096 { 12 };
+    juce::dsp::FFT fft8192 { 13 };
+    juce::dsp::WindowingFunction<float> window1024 { 1 << 10, juce::dsp::WindowingFunction<float>::hann };
+    juce::dsp::WindowingFunction<float> window2048 { 1 << 11, juce::dsp::WindowingFunction<float>::hann };
+    juce::dsp::WindowingFunction<float> window4096 { 1 << 12, juce::dsp::WindowingFunction<float>::hann };
+    juce::dsp::WindowingFunction<float> window8192 { 1 << 13, juce::dsp::WindowingFunction<float>::hann };
+    std::array<float, maxFftSize * 2> fftBuffer {};
 
     std::vector<float> analysisHistory;
     size_t historyWriteIndex = 0;
