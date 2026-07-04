@@ -17,6 +17,9 @@ public:
 
     void paint(juce::Graphics&) override;
     void resized() override;
+    void mouseMove(const juce::MouseEvent&) override;
+    void mouseExit(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
 
 private:
     void timerCallback() override;
@@ -31,30 +34,49 @@ private:
     void drawLevels(juce::Graphics&, juce::Rectangle<int>);
     void drawTeacher(juce::Graphics&, juce::Rectangle<int>);
     void drawGoodizer(juce::Graphics&, juce::Rectangle<int>);
+    void drawMixHub(juce::Graphics&, juce::Rectangle<int>);
+    void drawMixHubConflictMap(juce::Graphics&, juce::Rectangle<int>, const mixteacher::MixHubSnapshot&);
+    void drawTitlePopup(juce::Graphics&);
+    void drawHandshake(juce::Graphics&, juce::Rectangle<int>, float progress);
     void drawSection(juce::Graphics&, juce::Rectangle<int>, const juce::String& title);
     void drawMeter(juce::Graphics&, juce::Rectangle<int>, const juce::String& label, float db, float normalised, juce::Colour colour);
 
     bool isFrozen() const;
     bool isRussian() const;
+    bool isMixHubMode() const;
     float getGoodizerAmount() const;
     juce::String getSpectrumFftLabel() const;
     juce::String tr(const char* ruUtf8, const char* en) const;
     void updateProblemSnapshot();
     void updateDisplayedSnapshot();
+    void updateDisplayedHubSnapshot();
     void updateSmoothedSpectrum();
     void drawSpectrumBars(juce::Graphics&, juce::Rectangle<int>, const mixteacher::AnalysisSnapshot&, bool compact);
 
     MixTeacherAudioProcessor& audioProcessor;
     mixteacher::AnalysisSnapshot snapshot;
     mixteacher::AnalysisSnapshot displayedSnapshot;
+    mixteacher::MixHubSnapshot hubSnapshot;
+    mixteacher::MixHubSnapshot displayedHubSnapshot;
     mixteacher::AnalysisSnapshot problemSnapshot;
     bool hasProblemSnapshot = false;
     mixteacher::IssueKind problemSnapshotKind = mixteacher::IssueKind::none;
     mixteacher::IssueKind pendingDisplayKind = mixteacher::IssueKind::none;
     double pendingDisplayStartMs = 0.0;
+    juce::String pendingHubSignature;
+    double pendingHubStartMs = 0.0;
+    double lastHubActiveMs = 0.0;
     std::array<float, mixteacher::spectrumBins> smoothedSpectrum {};
+    juce::Rectangle<int> titleClickArea;
+    juce::Rectangle<int> titlePopupArea;
+    juce::Rectangle<int> thanksButtonArea;
+    bool titlePopupVisible = false;
+    bool handshakeActive = false;
+    float titlePopupAmount = 0.0f;
+    float handshakeProgress = 0.0f;
 
     juce::ComboBox trackTypeBox;
+    juce::ComboBox pluginRoleBox;
     juce::ComboBox explanationModeBox;
     juce::ComboBox languageBox;
     juce::ComboBox spectrumFftBox;
@@ -69,6 +91,7 @@ private:
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
 
     std::unique_ptr<ComboAttachment> trackTypeAttachment;
+    std::unique_ptr<ComboAttachment> pluginRoleAttachment;
     std::unique_ptr<ComboAttachment> explanationModeAttachment;
     std::unique_ptr<ComboAttachment> languageAttachment;
     std::unique_ptr<ComboAttachment> spectrumFftAttachment;

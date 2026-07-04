@@ -12,7 +12,7 @@ class MixTeacherAudioProcessor final : public juce::AudioProcessor
 {
 public:
     MixTeacherAudioProcessor();
-    ~MixTeacherAudioProcessor() override = default;
+    ~MixTeacherAudioProcessor() override;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
@@ -40,6 +40,8 @@ public:
 
     juce::AudioProcessorValueTreeState& getParameters() { return parameters; }
     mixteacher::AnalysisSnapshot getLatestAnalysisSnapshot();
+    mixteacher::MixHubSnapshot getMixHubSnapshot() const;
+    bool isMixHubMode() const;
     void resetAnalysis();
 
 private:
@@ -58,6 +60,8 @@ private:
     void updateValidity(mixteacher::AnalysisSnapshot& snapshot);
     void updateTrackDetection(mixteacher::AnalysisSnapshot& snapshot);
     void updateDrumProfile(mixteacher::AnalysisSnapshot& snapshot);
+    void publishTrackSnapshot(const mixteacher::AnalysisSnapshot& snapshot) const;
+    void removePublishedTrack() const;
 
     juce::AudioProcessorValueTreeState parameters;
 
@@ -83,12 +87,18 @@ private:
     size_t historyWriteIndex = 0;
 
     std::atomic<float> latestPeakLinear { 0.0f };
+    std::atomic<float> latestTruePeakLinear { 0.0f };
     std::atomic<float> latestRmsLinear { 0.0f };
+    std::atomic<float> latestStereoCorrelation { 1.0f };
+    std::atomic<float> latestStereoWidth { 0.0f };
+    std::atomic<float> latestMonoFoldDownLossDb { 0.0f };
     std::atomic<int> clippingCount { 0 };
     std::atomic<int64_t> analysedSamples { 0 };
 
     std::array<float, 8> goodizerLowState {};
+    std::array<float, 8> previousTruePeakSample {};
     double currentSampleRate = 44100.0;
+    int instanceId = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MixTeacherAudioProcessor)
 };

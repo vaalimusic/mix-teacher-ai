@@ -26,6 +26,16 @@ juce::var stringArrayToVar(const std::vector<juce::String>& values)
     return array;
 }
 
+template <size_t Size>
+juce::var floatArrayToVar(const std::array<float, Size>& values)
+{
+    juce::Array<juce::var> array;
+    for (const auto value : values)
+        array.add(value);
+
+    return array;
+}
+
 juce::var issueToVar(const TeacherIssue& issue, const juce::String& language)
 {
     auto* object = new juce::DynamicObject();
@@ -38,6 +48,16 @@ juce::var issueToVar(const TeacherIssue& issue, const juce::String& language)
     object->setProperty("why", issue.why);
     object->setProperty("action", issue.action);
     object->setProperty("listen_check", issue.listenCheck);
+    return object;
+}
+
+juce::var hubIssueToVar(const MixHubIssue& issue)
+{
+    auto* object = new juce::DynamicObject();
+    object->setProperty("severity", severityToString(issue.severity));
+    object->setProperty("title", issue.title);
+    object->setProperty("detail", issue.detail);
+    object->setProperty("action", issue.action);
     return object;
 }
 
@@ -107,6 +127,7 @@ juce::String issueKindToString(IssueKind kind)
         case IssueKind::snareBoxiness: return "snare_boxiness";
         case IssueKind::drumBoom: return "drum_boom";
         case IssueKind::sibilance: return "sibilance";
+        case IssueKind::monoCompatibility: return "mono_compatibility";
         case IssueKind::dense: return "too_dense";
         case IssueKind::dynamics: return "too_dynamic";
         case IssueKind::transient: return "too_spiky";
@@ -175,6 +196,7 @@ std::vector<TeacherIssue> buildTeacherIssues(const AnalysisSnapshot& snapshot)
     const auto validForFrequency = snapshot.validity.state == ValidityState::good;
     const auto quietUsable = snapshot.validity.state == ValidityState::quietButUsable;
     const auto effectiveType = snapshot.track.effectiveType;
+    const auto ceilingPeakDb = juce::jmax(snapshot.peakDbfs, snapshot.truePeakDbfs);
 
     if (snapshot.validity.state == ValidityState::tooQuiet)
     {
@@ -203,7 +225,7 @@ std::vector<TeacherIssue> buildTeacherIssues(const AnalysisSnapshot& snapshot)
                                    0.96f,
                                    1,
                                    localised(russian, "Есть клиппинг", "Clipping detected"),
-                                   { juce::String("Clips: ") + juce::String(snapshot.clippingCount), dbEvidence("Peak", snapshot.peakDbfs) },
+                                   { juce::String("Clips: ") + juce::String(snapshot.clippingCount), dbEvidence("True peak", snapshot.truePeakDbfs) },
                                    localised(russian,
                                              "Сначала нужно убрать перегруз. Пока есть клиппинг, анализ частот становится менее полезным.",
                                              "Fix overload first. While clipping is present, frequency analysis is less useful."),
@@ -214,14 +236,14 @@ std::vector<TeacherIssue> buildTeacherIssues(const AnalysisSnapshot& snapshot)
                                              "После снижения уровня проверь, исчезли ли красные пики и щелчки.",
                                              "After lowering the level, check whether red peaks and clicks are gone.")));
     }
-    else if (snapshot.peakDbfs > -1.0f)
+    else if (ceilingPeakDb > -1.0f)
     {
         issues.push_back(makeIssue(IssueKind::peak,
                                    Severity::critical,
                                    0.9f,
                                    3,
                                    localised(russian, "Пики почти у цифрового потолка", "Peaks are almost at digital ceiling"),
-                                   { dbEvidence("Peak", snapshot.peakDbfs), dbEvidence("Headroom", snapshot.headroomDb) },
+                                   { dbEvidence("True peak", snapshot.truePeakDbfs), dbEvidence("Headroom", snapshot.headroomDb) },
                                    localised(russian,
                                              "Запаса почти нет. EQ, компрессия или сатурация легко доведут сигнал до клиппинга.",
                                              "There is almost no headroom. EQ, compression, or saturation can easily push the signal into clipping."),
@@ -232,14 +254,14 @@ std::vector<TeacherIssue> buildTeacherIssues(const AnalysisSnapshot& snapshot)
                                              "Сравни до и после на той же громкости мониторинга: звук должен стать чище, а не просто тише.",
                                              "Compare before and after at the same monitoring volume: it should sound cleaner, not just quieter.")));
     }
-    else if (snapshot.peakDbfs > -3.0f)
+    else if (ceilingPeakDb > -3.0f)
     {
         issues.push_back(makeIssue(IssueKind::lowHeadroom,
                                    Severity::problem,
                                    0.78f,
                                    3,
                                    localised(russian, "Мало headroom", "Low headroom"),
-                                   { dbEvidence("Peak", snapshot.peakDbfs), dbEvidence("Headroom", snapshot.headroomDb) },
+                                   { dbEvidence("True peak", snapshot.truePeakDbfs), dbEvidence("Headroom", snapshot.headroomDb) },
                                    localised(russian,
                                              "Уровень рабочий, но запас до 0 dBFS маленький.",
                                              "The level is usable, but the safety margin before 0 dBFS is small."),
@@ -332,6 +354,27 @@ std::vector<TeacherIssue> buildTeacherIssues(const AnalysisSnapshot& snapshot)
                                    localised(russian,
                                              "Проверь на тихом мониторинге, не колет ли атака ухо.",
                                              "At lower monitoring volume, check whether the attack still pokes your ear.")));
+    }
+
+    if ((snapshot.stereoCorrelation < -0.15f || snapshot.monoFoldDownLossDb < -4.0f) && snapshot.peakDbfs > -50.0f)
+    {
+        issues.push_back(makeIssue(IssueKind::monoCompatibility,
+                                   Severity::warning,
+                                   juce::jlimit(0.55f, 0.9f, std::abs(snapshot.monoFoldDownLossDb) / 8.0f),
+                                   4,
+                                   localised(russian, "Может быть проблема в mono", "Possible mono compatibility issue"),
+                                   { juce::String("Correlation: ") + juce::String(snapshot.stereoCorrelation, 2),
+                                     dbEvidence("Mono loss", snapshot.monoFoldDownLossDb),
+                                     juce::String("Width: ") + juce::String(snapshot.stereoWidth * 100.0f, 0) + "%" },
+                                   localised(russian,
+                                             "Широкие эффекты или противофаза могут терять уровень при сложении в mono.",
+                                             "Wide effects or phase opposition can lose level when folded to mono."),
+                                   localised(russian,
+                                             "Проверь mono. Если центр пропадает, сузь низ/эффект или ослабь stereo widening.",
+                                             "Check mono. If the center disappears, narrow the low end/effect or reduce stereo widening."),
+                                   localised(russian,
+                                             "В mono важные элементы должны остаться читаемыми: vocal, kick, bass, snare.",
+                                             "In mono, key elements should remain readable: vocal, kick, bass, snare.")));
     }
 
     if (validForFrequency)
@@ -444,15 +487,16 @@ std::vector<TeacherIssue> buildTeacherIssues(const AnalysisSnapshot& snapshot)
                                                  "Check whether words become clearer without losing the voice body.")));
         }
 
-        if (isVocal && snapshot.bandDb.sibilance > snapshot.bandDb.tone + 3.0f && snapshot.transientScore > 0.35f)
+        if (isVocal && snapshot.bandDb.sibilance > snapshot.bandDb.tone + 2.0f && snapshot.sibilanceSpikeScore > 0.35f)
         {
             issues.push_back(makeIssue(IssueKind::sibilance,
                                        Severity::problem,
-                                       0.76f,
+                                       juce::jlimit(0.62f, 0.92f, snapshot.sibilanceSpikeScore),
                                        6,
                                        localised(russian, "Возможны сибилянты", "Possible sibilance"),
                                        { dbEvidence("5-9 kHz", snapshot.bandDb.sibilance),
-                                         juce::String("Transient score: ") + juce::String(snapshot.transientScore * 100.0f, 0) + "%" },
+                                         dbEvidence("Sibilance peak", snapshot.sibilancePeakDb),
+                                         juce::String("Sibilance spikes: ") + juce::String(snapshot.sibilanceSpikeScore * 100.0f, 0) + "%" },
                                        localised(russian,
                                                  "Верхняя зона активна и совпадает с резкими моментами. На вокале это часто слышится как 'с' и 'ш'.",
                                                  "The upper band is active and lines up with sharp moments. On vocals this often sounds like 's' and 'sh'."),
@@ -601,23 +645,26 @@ juce::String AnalysisSnapshot::toJson() const
     levels->setProperty("lufs_short_term", lufsShortTerm);
     levels->setProperty("crest_factor_db", crestFactorDb);
     levels->setProperty("headroom_db", headroomDb);
+    levels->setProperty("stereo_correlation", stereoCorrelation);
+    levels->setProperty("stereo_width", stereoWidth);
+    levels->setProperty("mono_fold_down_loss_db", monoFoldDownLossDb);
     levels->setProperty("clipping_count", clippingCount);
     levels->setProperty("clipping_detected", clippingDetected);
     root->setProperty("levels", levels);
-
-    juce::Array<juce::var> dynamicsCurve;
-    for (const auto value : dynamics)
-        dynamicsCurve.add(value);
 
     auto* dynamicsObject = new juce::DynamicObject();
     dynamicsObject->setProperty("active_rms_p10", activeRmsP10);
     dynamicsObject->setProperty("active_rms_p50", activeRmsP50);
     dynamicsObject->setProperty("active_rms_p90", activeRmsP90);
     dynamicsObject->setProperty("active_rms_range_db", rmsRangeDb);
+    dynamicsObject->setProperty("active_window_ratio", activeWindowRatio);
+    dynamicsObject->setProperty("noise_floor_db", noiseFloorDb);
     dynamicsObject->setProperty("transient_score", transientScore);
+    dynamicsObject->setProperty("transient_density", transientDensity);
     dynamicsObject->setProperty("onset_count", onsetCount);
     dynamicsObject->setProperty("peak_to_rms_db", crestFactorDb);
-    dynamicsObject->setProperty("curve", dynamicsCurve);
+    dynamicsObject->setProperty("curve", floatArrayToVar(dynamics));
+    dynamicsObject->setProperty("low_end_curve", floatArrayToVar(lowEndCurve));
     root->setProperty("dynamics", dynamicsObject);
 
     auto* bandDbObject = new juce::DynamicObject();
@@ -635,6 +682,8 @@ juce::String AnalysisSnapshot::toJson() const
     spectrumObject->setProperty("band_energy_db", bandDbObject);
     spectrumObject->setProperty("dominant_bands", stringArrayToVar(dominantBands));
     spectrumObject->setProperty("weak_bands", stringArrayToVar(weakBands));
+    spectrumObject->setProperty("sibilance_peak_db", sibilancePeakDb);
+    spectrumObject->setProperty("sibilance_spike_score", sibilanceSpikeScore);
     root->setProperty("spectrum", spectrumObject);
 
     auto* drumObject = new juce::DynamicObject();
@@ -676,6 +725,102 @@ juce::String AnalysisSnapshot::toJson() const
     auto* first = new juce::DynamicObject();
     first->setProperty("title", firstStep.title);
     first->setProperty("action", firstStep.action);
+    root->setProperty("first_step", first);
+
+    return juce::JSON::toString(juce::var(root), true);
+}
+
+juce::String MixHubSnapshot::toJson() const
+{
+    auto* root = new juce::DynamicObject();
+    root->setProperty("plugin", plugin);
+    root->setProperty("version", version);
+    root->setProperty("analysis_mode", "mix_hub");
+    root->setProperty("language", language);
+    root->setProperty("track_count", trackCount);
+
+    auto* tonal = new juce::DynamicObject();
+    tonal->setProperty("low_db", tonalLowDb);
+    tonal->setProperty("low_mid_db", tonalLowMidDb);
+    tonal->setProperty("mid_db", tonalMidDb);
+    tonal->setProperty("high_db", tonalHighDb);
+    tonal->setProperty("tilt_db", tonalTiltDb);
+    root->setProperty("tonal_balance", tonal);
+
+    juce::Array<juce::var> trackArray;
+    for (const auto& track : tracks)
+    {
+        auto* object = new juce::DynamicObject();
+        object->setProperty("instance_id", track.instanceId);
+        object->setProperty("manual_type", track.manualType);
+        object->setProperty("detected_type", track.detectedType);
+        object->setProperty("effective_type", track.effectiveType);
+        object->setProperty("type_confidence", track.typeConfidence);
+        object->setProperty("peak_dbfs", track.peakDbfs);
+        object->setProperty("rms_dbfs", track.rmsDbfs);
+        object->setProperty("lufs_short_term", track.lufsShortTerm);
+        object->setProperty("crest_factor_db", track.crestFactorDb);
+        object->setProperty("headroom_db", track.headroomDb);
+        object->setProperty("stereo_correlation", track.stereoCorrelation);
+        object->setProperty("stereo_width", track.stereoWidth);
+        object->setProperty("mono_fold_down_loss_db", track.monoFoldDownLossDb);
+        object->setProperty("clipping_detected", track.clippingDetected);
+        object->setProperty("valid_for_analysis", track.validForAnalysis);
+        object->setProperty("age_sec", track.ageSec);
+        object->setProperty("low_end_curve", floatArrayToVar(track.lowEndCurve));
+
+        auto* bands = new juce::DynamicObject();
+        addBandDb(*bands, "40_80_hz", track.bandDb.lowFoundation);
+        addBandDb(*bands, "80_150_hz", track.bandDb.lowBody);
+        addBandDb(*bands, "150_350_hz", track.bandDb.mud);
+        addBandDb(*bands, "350_800_hz", track.bandDb.boxiness);
+        addBandDb(*bands, "2_5khz", track.bandDb.presence);
+        addBandDb(*bands, "5_9khz", track.bandDb.sibilance);
+        object->setProperty("band_energy_db", bands);
+
+        trackArray.add(object);
+    }
+    root->setProperty("tracks", trackArray);
+
+    juce::Array<juce::var> issueArray;
+    for (const auto& issue : issues)
+        issueArray.add(hubIssueToVar(issue));
+    root->setProperty("issues", issueArray);
+
+    juce::Array<juce::var> conflictArray;
+    for (const auto& conflict : frequencyConflicts)
+    {
+        auto* object = new juce::DynamicObject();
+        object->setProperty("track_a_id", conflict.trackAId);
+        object->setProperty("track_b_id", conflict.trackBId);
+        object->setProperty("track_a_type", conflict.trackAType);
+        object->setProperty("track_b_type", conflict.trackBType);
+        object->setProperty("band", conflict.band);
+        object->setProperty("band_index", conflict.bandIndex);
+        object->setProperty("strength", conflict.strength);
+        object->setProperty("severity", severityToString(conflict.severity));
+        conflictArray.add(object);
+    }
+    root->setProperty("frequency_conflicts", conflictArray);
+
+    auto* lowEndTimingObject = new juce::DynamicObject();
+    lowEndTimingObject->setProperty("available", lowEndTiming.available);
+    lowEndTimingObject->setProperty("track_a_id", lowEndTiming.trackAId);
+    lowEndTimingObject->setProperty("track_b_id", lowEndTiming.trackBId);
+    lowEndTimingObject->setProperty("track_a_type", lowEndTiming.trackAType);
+    lowEndTimingObject->setProperty("track_b_type", lowEndTiming.trackBType);
+    lowEndTimingObject->setProperty("simultaneous_ratio", lowEndTiming.simultaneousRatio);
+    lowEndTimingObject->setProperty("weighted_overlap", lowEndTiming.weightedOverlap);
+    lowEndTimingObject->setProperty("risk", lowEndTiming.risk);
+    lowEndTimingObject->setProperty("active_bins", lowEndTiming.activeBins);
+    lowEndTimingObject->setProperty("overlap_bins", lowEndTiming.overlapBins);
+    lowEndTimingObject->setProperty("severity", severityToString(lowEndTiming.severity));
+    lowEndTimingObject->setProperty("curve", floatArrayToVar(lowEndTiming.curve));
+    root->setProperty("low_end_timing", lowEndTimingObject);
+
+    auto* first = new juce::DynamicObject();
+    first->setProperty("title", firstStepTitle);
+    first->setProperty("action", firstStepAction);
     root->setProperty("first_step", first);
 
     return juce::JSON::toString(juce::var(root), true);

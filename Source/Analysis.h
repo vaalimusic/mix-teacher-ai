@@ -34,6 +34,7 @@ enum class IssueKind
     snareBoxiness,
     drumBoom,
     sibilance,
+    monoCompatibility,
     dense,
     dynamics,
     transient,
@@ -143,7 +144,15 @@ struct AnalysisSnapshot
     float activeRmsP10 = -120.0f;
     float activeRmsP50 = -120.0f;
     float activeRmsP90 = -120.0f;
+    float activeWindowRatio = 0.0f;
+    float noiseFloorDb = -120.0f;
     float transientScore = 0.0f;
+    float transientDensity = 0.0f;
+    float sibilanceSpikeScore = 0.0f;
+    float sibilancePeakDb = -120.0f;
+    float stereoCorrelation = 1.0f;
+    float stereoWidth = 0.0f;
+    float monoFoldDownLossDb = 0.0f;
     int onsetCount = 0;
     int clippingCount = 0;
     bool clippingDetected = false;
@@ -151,6 +160,7 @@ struct AnalysisSnapshot
     std::array<float, waveformBins> waveform {};
     std::array<float, spectrumBins> spectrum {};
     std::array<float, dynamicsBins> dynamics {};
+    std::array<float, dynamicsBins> lowEndCurve {};
     BandLevels bands;
     BandEnergyDb bandDb;
     std::vector<juce::String> dominantBands;
@@ -160,6 +170,87 @@ struct AnalysisSnapshot
     DrumProfile drumProfile;
     std::vector<TeacherIssue> issues;
     FirstStep firstStep;
+
+    juce::String toJson() const;
+};
+
+struct HubTrackSummary
+{
+    int instanceId = 0;
+    juce::String manualType = "auto";
+    juce::String detectedType = "unknown";
+    juce::String effectiveType = "unknown";
+    float typeConfidence = 0.0f;
+    float peakDbfs = -120.0f;
+    float rmsDbfs = -120.0f;
+    float lufsShortTerm = -120.0f;
+    float crestFactorDb = 0.0f;
+    float headroomDb = 120.0f;
+    float stereoCorrelation = 1.0f;
+    float stereoWidth = 0.0f;
+    float monoFoldDownLossDb = 0.0f;
+    bool clippingDetected = false;
+    bool validForAnalysis = false;
+    BandEnergyDb bandDb;
+    std::array<float, dynamicsBins> lowEndCurve {};
+    DrumProfile drumProfile;
+    float transientScore = 0.0f;
+    double ageSec = 0.0;
+};
+
+struct MixHubIssue
+{
+    Severity severity = Severity::ok;
+    juce::String title;
+    juce::String detail;
+    juce::String action;
+};
+
+struct HubFrequencyConflict
+{
+    int trackAId = 0;
+    int trackBId = 0;
+    juce::String trackAType;
+    juce::String trackBType;
+    juce::String band;
+    int bandIndex = -1;
+    float strength = 0.0f;
+    Severity severity = Severity::info;
+};
+
+struct HubLowEndTiming
+{
+    bool available = false;
+    int trackAId = 0;
+    int trackBId = 0;
+    juce::String trackAType;
+    juce::String trackBType;
+    float simultaneousRatio = 0.0f;
+    float weightedOverlap = 0.0f;
+    float risk = 0.0f;
+    int activeBins = 0;
+    int overlapBins = 0;
+    Severity severity = Severity::info;
+    std::array<float, dynamicsBins> curve {};
+};
+
+struct MixHubSnapshot
+{
+    juce::String plugin = "Mix Teacher AI";
+    juce::String version = "0.4";
+    juce::String language = "ru";
+    int trackCount = 0;
+    float tonalLowDb = -120.0f;
+    float tonalLowMidDb = -120.0f;
+    float tonalMidDb = -120.0f;
+    float tonalHighDb = -120.0f;
+    float tonalTiltDb = 0.0f;
+    std::vector<HubTrackSummary> tracks;
+    std::vector<MixHubIssue> issues;
+    std::vector<HubFrequencyConflict> frequencyConflicts;
+    HubLowEndTiming lowEndTiming;
+    juce::String firstStepTitle;
+    juce::String firstStepAction;
 
     juce::String toJson() const;
 };
